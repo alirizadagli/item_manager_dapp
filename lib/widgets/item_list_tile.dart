@@ -26,7 +26,7 @@ class UniqueItemListTile extends StatelessWidget {
         children: [
           Text("${item.itemPrice} wei"),
           Text("Status: ${item.state.name}"),
-          Text("Item Address: ${item.item.toString().substring(0, 12)}..."),
+          Text("Item Address: ${item.itemAddress.toString().substring(0, 12)}..."),
         ],
       ),
       trailing: Column(
@@ -44,8 +44,10 @@ class UniqueItemListTile extends StatelessWidget {
                   index: item.index,
                   price: item.itemPrice,
                 );
-              } else {
+              } else if (item.state == SupplyChainState.paid) {
                 getData(context).triggerDelivery(item.index);
+              } else {
+                getData(context).fallback(item.itemAddress);
               }
             },
             icon: Icon(

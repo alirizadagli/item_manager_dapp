@@ -32,10 +32,11 @@ class Web3ItemManagerService extends ChangeNotifier {
   }
 
   late Web3Client _web3client;
-  late ContractAbi _abiCode;
-  late EthereumAddress _contractAddress;
+  late ContractAbi _itemManagerAbiCode;
+  late EthereumAddress _itemManagerContractAddress;
+  late ContractEvent _supplyChainEvent;
 
-  late DeployedContract _deployedContract;
+  late DeployedContract _deployedParentContract;
   late ContractFunction _createItem;
   late ContractFunction _triggerPayment;
   late ContractFunction _triggerDelivery;
@@ -55,30 +56,85 @@ class Web3ItemManagerService extends ChangeNotifier {
     getDeployedContract();
     await fetchItems();
     switchAccount();
+    listenEvents();
   }
 
   Future<void> getABI() async {
-    String abiFile = await rootBundle.loadString(
+    String itemManagerAbiFile = await rootBundle.loadString(
       'build/contracts/ItemManager.json',
     );
-    final jsonABI = jsonDecode(abiFile);
-    _abiCode = ContractAbi.fromJson(
-      jsonEncode(jsonABI["abi"]),
+    final itemManagerAbiAsJson = jsonDecode(itemManagerAbiFile);
+    _itemManagerAbiCode = ContractAbi.fromJson(
+      jsonEncode(itemManagerAbiAsJson["abi"]),
       "ItemManager",
     );
 
-    _contractAddress = EthereumAddress.fromHex(
-      jsonABI["networks"]["5777"]["address"],
+    _itemManagerContractAddress = EthereumAddress.fromHex(
+      itemManagerAbiAsJson["networks"]["5777"]["address"],
     );
   }
 
-  void getDeployedContract() {
-    _deployedContract = DeployedContract(_abiCode, _contractAddress);
-    _createItem = _deployedContract.function("createItem");
-    _triggerPayment = _deployedContract.function("triggerPayment");
-    _triggerDelivery = _deployedContract.function("triggerDelivery");
-    _items = _deployedContract.function("items");
-    _itemIndex = _deployedContract.function("itemIndex");
+  List<FilterEvent>? logs;
+
+  void listenEvents() async {
+    logs = await _web3client.getLogs(
+      FilterOptions(address: _itemManagerContractAddress),
+    );
+    notifyListeners();
+    _web3client
+        .events(FilterOptions(address: _itemManagerContractAddress))
+        .listen(
+      (event) async {
+        if (event.topics != null && event.data != null) {
+          final decodedResult = _supplyChainEvent.decodeResults(
+            event.topics!,
+            event.data!,
+          );
+          for (var element in decodedResult) {
+            debugPrint(element.toString());
+          }
+        }
+      },
+    );
+  }
+
+  void getDeployedContract() async {
+    _deployedParentContract = DeployedContract(
+      _itemManagerAbiCode,
+      _itemManagerContractAddress,
+    );
+    _createItem = _deployedParentContract.function("createItem");
+    _triggerPayment = _deployedParentContract.function("triggerPayment");
+    _triggerDelivery = _deployedParentContract.function("triggerDelivery");
+    _items = _deployedParentContract.function("items");
+    _itemIndex = _deployedParentContract.function("itemIndex");
+    _supplyChainEvent = _deployedParentContract.events.single;
+  }
+
+  Future<void> fallback(EthereumAddress item) async {
+    String itemAbiFile = await rootBundle.loadString(
+      'build/contracts/Item.json',
+    );
+    final itemAbiAsJson = jsonDecode(itemAbiFile);
+    ContractAbi abi;
+
+    abi = ContractAbi.fromJson(
+      jsonEncode(itemAbiAsJson["abi"]),
+      "Item",
+    );
+    DeployedContract deployedChildContract;
+    deployedChildContract = DeployedContract(
+      abi,
+      item,
+    );
+
+    final l = await _web3client.call(
+      contract: deployedChildContract,
+      function: deployedChildContract.functions.firstWhere(
+        (e) => e.type == ContractFunctionType.fallback,
+      ),
+      params: [],
+    );
   }
 
   Future<void> createItem({
@@ -89,7 +145,7 @@ class Web3ItemManagerService extends ChangeNotifier {
       await _web3client.sendTransaction(
         currentAccount!,
         Transaction.callContract(
-          contract: _deployedContract,
+          contract: _deployedParentContract,
           function: _createItem,
           parameters: [
             identifier,
@@ -109,7 +165,7 @@ class Web3ItemManagerService extends ChangeNotifier {
       await _web3client.sendTransaction(
         currentAccount!,
         Transaction.callContract(
-          contract: _deployedContract,
+          contract: _deployedParentContract,
           function: _triggerPayment,
           parameters: [index],
           value: EtherAmount.inWei(price),
@@ -121,7 +177,7 @@ class Web3ItemManagerService extends ChangeNotifier {
 
   Future<void> fetchItems() async {
     final lastIndex = await _web3client.call(
-      contract: _deployedContract,
+      contract: _deployedParentContract,
       function: _itemIndex,
       params: [],
     );
@@ -129,7 +185,7 @@ class Web3ItemManagerService extends ChangeNotifier {
     items.clear();
     while (index < lastIndex[0]) {
       List list = await _web3client.call(
-        contract: _deployedContract,
+        contract: _deployedParentContract,
         function: _items,
         params: [index],
       );
@@ -150,7 +206,7 @@ class Web3ItemManagerService extends ChangeNotifier {
       await _web3client.sendTransaction(
         currentAccount!,
         Transaction.callContract(
-          contract: _deployedContract,
+          contract: _deployedParentContract,
           function: _triggerDelivery,
           parameters: [index],
         ),
